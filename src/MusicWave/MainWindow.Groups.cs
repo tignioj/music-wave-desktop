@@ -16,42 +16,56 @@ public partial class MainWindow
         foreach (var group in settings.Groups)
             if (watchedGroups.Add(group)) group.PropertyChanged += GroupPropertyChanged;
     }
-    void GroupsChanged(object? sender, NotifyCollectionChangedEventArgs e) { RebindGroups(); dirty = true; RefreshGroupUi(); }
+    void GroupsChanged(object? sender, NotifyCollectionChangedEventArgs e) { RebindGroups(); dirty = true; RefreshGroupUi(); RefreshAnimationUi(true); }
     void GroupPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         dirty = true;
-        if (e.PropertyName == nameof(LayerGroup.Name)) RefreshGroupUi();
+        if (e.PropertyName is nameof(LayerGroup.Name) or nameof(LayerGroup.AnimationId)) { RefreshGroupUi(); RefreshAnimationUi(); }
+        if (e.PropertyName == nameof(LayerGroup.Visible)) { RefreshGroupUi(); Preview.InvalidateVisual(); }
     }
     void RefreshGroupUi()
     {
         if (settings is null || GroupEditor is null || LayerAnimationEditor is null) return;
         LayerGroups.RefreshNames(settings);
+        AnimationBindings.RefreshNames(settings);
         var group = GroupPicker.SelectedItem as LayerGroup;
         GroupEditor.DataContext = group; GroupEditor.IsEnabled = group is not null;
         GroupEmptyHint.Visibility = group is null ? Visibility.Visible : Visibility.Collapsed;
         var members = group is null ? [] : LayerGroups.Members(settings, group);
-        GroupMembersText.Text = group is null ? "" : $"{members.Length} 个成员 · 悬停查看名称";
+        GroupMembersText.Text = group is null ? "" : $"{(group.Visible ? "" : "已隐藏 · ")}{members.Length} 个成员 · 悬停查看名称";
         GroupMembersText.ToolTip = group is null ? null : string.Join(Environment.NewLine, members.Select(l => l.Name));
-        var memberGroup = LayerEditor.DataContext is WallpaperLayer layer ? LayerGroups.Find(settings, layer) : null;
-        LayerAnimationEditor.IsEnabled = memberGroup is null;
-        LayerStaticOption.IsEnabled = memberGroup is null;
+        var layer = LayerEditor.DataContext as WallpaperLayer;
+        var memberGroup = layer is null ? null : AnimationBindings.MotionGroup(settings, layer);
+        var animation = layer is null ? null : AnimationBindings.Find(settings, layer);
+        LayerAnimationEditor.IsEnabled = memberGroup is null && animation is null;
+        LayerStaticOption.IsEnabled = memberGroup is null && animation is null;
         MemberGroupHint.Visibility = memberGroup is null ? Visibility.Collapsed : Visibility.Visible;
         MemberGroupText.Text = memberGroup is null ? "" : $"由「{memberGroup.Name}」控制整体动画";
-        Preview.SelectedGroup = GroupPropertiesPanel.Visibility == Visibility.Visible ? group : null;
+        LayerBindingHint.Visibility = animation is null ? Visibility.Collapsed : Visibility.Visible;
+        LayerBindingText.Text = animation is null ? "" : $"绑定动画对象「{animation.Name}」";
+        var groupAnimation = group is null ? null : AnimationBindings.Find(settings, group);
+        GroupAnimationEditor.IsEnabled = groupAnimation is null;
+        GroupBindingHint.Visibility = groupAnimation is null ? Visibility.Collapsed : Visibility.Visible;
+        GroupBindingText.Text = groupAnimation is null ? "" : $"绑定动画对象「{groupAnimation.Name}」";
+        Preview.SelectedGroup = PropertyTabs.SelectedItem == GroupPropertiesTab ? group : null;
     }
     void LayerProperties_Click(object sender, RoutedEventArgs e)
     {
-        LayerPropertiesPanel.Visibility = Visibility.Visible; GroupPropertiesPanel.Visibility = Visibility.Collapsed;
+        PropertyTabs.SelectedItem = LayerPropertiesTab;
         PropertyScroll.ScrollToTop();
         Preview.SelectedGroup = null;
     }
     void ShowGroupProperties()
     {
-        LayerPropertiesPanel.Visibility = Visibility.Collapsed; GroupPropertiesPanel.Visibility = Visibility.Visible;
-        PropertyScroll.ScrollToTop();
+        PropertyTabs.SelectedItem = GroupPropertiesTab;
+        GroupPropertyScroll.ScrollToTop();
         RefreshGroupUi();
     }
     void GroupProperties_Click(object sender, RoutedEventArgs e) => ShowGroupProperties();
+    void PropertyTab_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (e.Source == PropertyTabs) RefreshGroupUi();
+    }
     void Group_Changed(object sender, SelectionChangedEventArgs e) => RefreshGroupUi();
     void CreateGroup_Click(object sender, RoutedEventArgs e)
     {
@@ -86,6 +100,12 @@ public partial class MainWindow
         LayerList.UnselectAll();
         foreach (var layer in members) LayerList.SelectedItems.Add(layer);
         if (members.Length > 0) LayerList.ScrollIntoView(members[0]);
+    }
+    void ToggleGroupVisibility_Click(object sender, RoutedEventArgs e)
+    {
+        if (GroupPicker.SelectedItem is not LayerGroup group) return;
+        group.Visible = !group.Visible;
+        Status(group.Visible ? $"已显示「{group.Name}」，保留各图层原有的显示设置。" : $"已隐藏「{group.Name}」内的全部图层。");
     }
     void DissolveGroup_Click(object sender, RoutedEventArgs e)
     {

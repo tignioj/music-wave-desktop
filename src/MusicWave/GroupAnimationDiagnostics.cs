@@ -14,6 +14,12 @@ internal static class GroupAnimationDiagnostics
 {
     static void Check(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
     static bool Near(double a, double b) => Math.Abs(a - b) < .003;
+    static byte[] Pixels(SceneRenderer preview)
+    {
+        preview.UpdateLayout();
+        var bitmap = new RenderTargetBitmap(960, 540, 96, 96, PixelFormats.Pbgra32); bitmap.Render(preview);
+        var pixels = new byte[960 * 540 * 4]; bitmap.CopyPixels(pixels, 960 * 4, 0); return pixels;
+    }
     public static void Run(StringBuilder report, string directory)
     {
         var project = ProjectSettings.Demo();
@@ -84,9 +90,16 @@ internal static class GroupAnimationDiagnostics
             Check(Near(preview.DisplayBounds(a).Left, start.Left) && Near(preview.DisplayBounds(a).Bottom, start.Bottom), "Grouped gesture cancellation failed.");
             gestures++;
         }
+        group.Visible = false; b.Visible = false;
         var path = Path.Combine(directory, "groups-roundtrip.musicwave.json"); ProjectStore.Save(project, path);
         var loaded = ProjectStore.Load(path);
         Check(loaded.Groups.Count == 1 && loaded.Groups[0].Id == group.Id && loaded.Layers[1].GroupId == group.Id && loaded.Groups[0].Phase == 37 && loaded.Groups[0].Speed == 1.75 && loaded.Layers[1].GroupName == group.Name, "Group project round trip failed.");
+        Check(!loaded.Groups[0].Visible && loaded.Layers[1].Visible && !loaded.Layers[2].Visible && !LayerGroups.IsVisible(loaded, loaded.Layers[1]), "Group visibility or individual visibility did not survive save/load.");
+        var oldGroup = JsonSerializer.SerializeToNode(project, ProjectStore.Json)!;
+        oldGroup["Groups"]![0]!.AsObject().Remove("Visible");
+        File.WriteAllText(path, oldGroup.ToJsonString(ProjectStore.Json));
+        Check(ProjectStore.Load(path).Groups[0].Visible, "Existing project without group visibility should default to visible.");
+        group.Visible = true; b.Visible = true;
         var legacy = JsonSerializer.SerializeToNode(ProjectSettings.Demo(), ProjectStore.Json)!.AsObject(); legacy.Remove("Groups");
         File.WriteAllText(path, legacy.ToJsonString(ProjectStore.Json));
         Check(ProjectStore.Load(path).Groups.Count == 0, "Legacy project without groups failed to load.");
@@ -123,7 +136,37 @@ internal static class GroupAnimationDiagnostics
             var bitmap = new RenderTargetBitmap(960, 540, 96, 96, PixelFormats.Pbgra32); bitmap.Render(preview);
             var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap));
             using var stream = File.Create(Path.Combine(directory, "group-preview.png")); png.Save(stream);
+
+            // A group hides every member, including independently bound members, without changing their own switches.
+            var animation = new AnimationObject { IsStatic = true }; project.Animations.Add(animation); a.AnimationId = animation.Id;
+            b.Visible = false; preview.SelectedGroup = null; preview.SelectedLayer = null;
+            composition.Update(project, frame); preview.Update(project, frame);
+            var shown = Pixels(preview);
+            var bounds = preview.DisplayBounds(a);
+            var point = new Point(bounds.Left + bounds.Width * .25, bounds.Top + bounds.Height * .25);
+            Check(preview.LayerAt(point) == a, "Visible independently bound member was not selectable.");
+            group.Visible = false; preview.SelectedGroup = group; preview.SelectedLayer = a;
+            composition.Update(project, frame); preview.Update(project, frame);
+            Check(new[] { a, b, c }.All(l => composition.TransformFor(l) is null) && composition.TransformFor(original[0]) is not null, "GPU did not hide all group members or hid the independent background.");
+            Check(preview.LayerAt(point) is null && a.Visible && !b.Visible, "Hidden group remained selectable or changed member visibility.");
+            var hidden = Pixels(preview);
+            var backgroundOnly = new ProjectSettings { Layers = [original[0]] };
+            preview.Update(backgroundOnly, frame);
+            Check(hidden.SequenceEqual(Pixels(preview)) && !hidden.SequenceEqual(shown), "Hidden group content or selection overlays remained in the preview.");
+            group.Visible = true; preview.SelectedGroup = null; preview.SelectedLayer = null;
+            composition.Update(project, frame); preview.Update(project, frame);
+            Check(composition.TransformFor(a) is not null && composition.TransformFor(b) is null && composition.TransformFor(c) is not null && shown.SequenceEqual(Pixels(preview)), "Showing group failed to restore the original per-layer visibility or rendered content.");
+
+            group.Visible = false;
+            var added = new WallpaperLayer { Path = "demo:mint" }; project.Layers.Add(added);
+            LayerGroups.Assign(project, group, [added]); composition.Update(project, frame);
+            Check(added.Visible && composition.TransformFor(added) is null, "New member of hidden group remained visible.");
+            LayerGroups.Detach(project, [added]); composition.Update(project, frame);
+            Check(composition.TransformFor(added) is not null, "Detached layer inherited stale group visibility.");
+            LayerGroups.Dissolve(project, group); composition.Update(project, frame);
+            Check(composition.TransformFor(a) is not null && composition.TransformFor(b) is null, "Dissolving hidden group lost individual visibility settings.");
         }
+        report.AppendLine("PASS: group hide/show preserves member switches, hides independently bound members, removes preview content/selection/hit targets and GPU visuals, restores exact pixels, handles join/detach/dissolve, persists visibility and defaults legacy groups to visible.");
         report.AppendLine($"PASS: grouping, membership, rename, detach/dissolve/regroup, legacy/round-trip/dangling references; {poseCases} shared-anchor poses across landscape/4K/portrait; {gestures} grouped drag/resize/cancel cases; GPU/preview transform parity and texture reuse.");
     }
 }

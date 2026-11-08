@@ -31,7 +31,21 @@ public abstract class AnimationSettings : Observable
     }
 }
 
-public sealed class WallpaperLayer : AnimationSettings
+public abstract class AnimationTarget : AnimationSettings
+{
+    string animationId = "", animationName = "独立参数";
+    public string AnimationId { get => animationId; set => Set(ref animationId, value ?? ""); }
+    [JsonIgnore] public string AnimationName { get => animationName; internal set => Set(ref animationName, value); }
+}
+
+public sealed class AnimationObject : AnimationSettings
+{
+    string id = Guid.NewGuid().ToString("N"), name = "新建动画";
+    public string Id { get => id; set => Set(ref id, value); }
+    public string Name { get => name; set => Set(ref name, value); }
+}
+
+public sealed class WallpaperLayer : AnimationTarget
 {
     string name = "新图层", path = "", groupId = "", groupName = "独立图层";
     bool visible = true, stretchToBounds;
@@ -50,12 +64,14 @@ public sealed class WallpaperLayer : AnimationSettings
     public double Opacity { get => opacity; set => Set(ref opacity, Math.Clamp(value, 0, 1)); }
 }
 
-public sealed class LayerGroup : AnimationSettings
+public sealed class LayerGroup : AnimationTarget
 {
     string id = Guid.NewGuid().ToString("N"), name = "新建组";
+    bool visible = true;
     double anchorX = 50, anchorY = 82;
     public string Id { get => id; set => Set(ref id, value); }
     public string Name { get => name; set => Set(ref name, value); }
+    public bool Visible { get => visible; set => Set(ref visible, value); }
     public double AnchorX { get => anchorX; set => Set(ref anchorX, Math.Clamp(value, -100, 200)); }
     public double AnchorY { get => anchorY; set => Set(ref anchorY, Math.Clamp(value, -100, 200)); }
 }
@@ -79,6 +95,7 @@ public sealed class ProjectSettings : Observable
     public string AudioDeviceId { get => audioDeviceId; set => Set(ref audioDeviceId, value); }
     public ObservableCollection<WallpaperLayer> Layers { get; set; } = [];
     public ObservableCollection<LayerGroup> Groups { get; set; } = [];
+    public ObservableCollection<AnimationObject> Animations { get; set; } = [];
     public static ProjectSettings Demo() => new()
     {
         Layers = [
@@ -101,6 +118,8 @@ public static class ProjectStore
         if (settings.Layers is null || settings.Layers.Any(l => l is null)) throw new InvalidDataException("项目图层无效");
         if (settings.Groups is null || settings.Groups.Any(g => g is null || string.IsNullOrWhiteSpace(g.Id)) || settings.Groups.Select(g => g.Id).Distinct().Count() != settings.Groups.Count)
             throw new InvalidDataException("项目分组无效或分组标识重复");
+        if (settings.Animations is null || settings.Animations.Any(a => a is null || string.IsNullOrWhiteSpace(a.Id)) || settings.Animations.Select(a => a.Id).Distinct().Count() != settings.Animations.Count)
+            throw new InvalidDataException("项目动画无效或动画标识重复");
         foreach (var layer in settings.Layers)
         {
             if (string.IsNullOrWhiteSpace(layer.Path)) throw new InvalidDataException("图层缺少图片路径");
@@ -110,6 +129,7 @@ public static class ProjectStore
         foreach (var layer in settings.Layers)
             if (layer.GroupId.Length > 0 && LayerGroups.Find(settings, layer) is null) layer.GroupId = "";
         LayerGroups.RefreshNames(settings);
+        AnimationBindings.RepairReferences(settings);
         return settings;
     }
     public static void Save(ProjectSettings settings, string path)

@@ -37,7 +37,7 @@ public sealed partial class SceneRenderer : FrameworkElement
     }
     public void Validate(ProjectSettings settings)
     {
-        foreach (var layer in settings.Layers.Where(l => l.Visible && !l.Path.StartsWith("demo:")))
+        foreach (var layer in settings.Layers.Where(l => LayerGroups.IsVisible(settings, l) && !l.Path.StartsWith("demo:")))
             if (!images.ContainsKey(layer.Path)) images[layer.Path] = LoadImage(layer.Path);
     }
     protected override void OnRender(DrawingContext dc)
@@ -51,7 +51,7 @@ public sealed partial class SceneRenderer : FrameworkElement
             for (var i = 0; i < project.Layers.Count; i++)
             {
                 var layer = project.Layers[i];
-                if (!layer.Visible) continue;
+                if (!LayerGroups.IsVisible(project, layer)) continue;
                 var motion = EditingMotion(layer);
                 var cx = w * layer.X / 100 + motion.X * w / 1920;
                 var cy = h * layer.Y / 100 + motion.Y * w / 1920;

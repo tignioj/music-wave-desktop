@@ -25,12 +25,13 @@ public sealed partial class SceneRenderer
             EndEdit(); selectedLayer = value; InvalidateVisual(); SelectedLayerChanged?.Invoke(this, EventArgs.Empty);
         }
     }
-    bool CanEdit(WallpaperLayer layer) => IsEditingEnabled && project is not null && project.Layers.Contains(layer) && layer.Visible
+    bool CanEdit(WallpaperLayer layer) => IsEditingEnabled && project is not null && project.Layers.Contains(layer) && LayerGroups.IsVisible(project, layer)
         && !(project.Layers.IndexOf(layer) == 0 && layer.IsStatic);
     LayerMotion EditingMotion(WallpaperLayer layer)
     {
         if (gesture is not null && ReferenceEquals(gesture.Layer, layer)) return gesture.Motion;
-        var pose = gesture is not null && layer.GroupId.Length > 0 && layer.GroupId == gesture.Layer.GroupId ? editFrame : frame;
+        var group = project is null ? null : AnimationBindings.MotionGroup(project, layer);
+        var pose = gesture is not null && group is not null && AnimationBindings.MotionGroup(project!, gesture.Layer) == group ? editFrame : frame;
         return project is null ? MotionMath.ForLayer(layer, pose) : MotionMath.ForLayer(project, layer, pose, ActualWidth, ActualHeight);
     }
 
@@ -82,14 +83,14 @@ public sealed partial class SceneRenderer
     }
     void DrawSelection(DrawingContext dc)
     {
-        if (IsEditingEnabled && SelectedGroup is { } group && project is not null && project.Groups.Contains(group))
+        if (IsEditingEnabled && SelectedGroup is { Visible: true } group && project is not null && project.Groups.Contains(group))
         {
             var union = Rect.Empty;
             foreach (var member in LayerGroups.Members(project, group).Where(l => l.Visible)) union.Union(DisplayBounds(member));
             var groupUnit = OverlayUnit;
             var groupPen = new Pen(Brush("#BCA0FA"), 1.5 * groupUnit) { DashStyle = DashStyles.Dash };
             if (!union.IsEmpty) dc.DrawRectangle(null, groupPen, union);
-            var motion = MotionMath.ForLayer(group, gesture is not null && gesture.Layer.GroupId == group.Id ? editFrame : frame);
+            var motion = MotionMath.ForLayer(AnimationBindings.Resolve(project, group), gesture is not null && AnimationBindings.MotionGroup(project, gesture.Layer) == group ? editFrame : frame);
             var anchor = new Point(ActualWidth * group.AnchorX / 100 + motion.X * ActualWidth / MotionMath.DesignWidth,
                 ActualHeight * group.AnchorY / 100 + motion.Y * ActualWidth / MotionMath.DesignWidth);
             dc.DrawEllipse(background, groupPen, anchor, 5 * groupUnit, 5 * groupUnit);
@@ -156,8 +157,8 @@ public sealed partial class SceneRenderer
         }
         Focus();
         var layer = SelectedLayer!;
-        var group = LayerGroups.Find(project!, layer);
-        var parentMotion = group is null ? new LayerMotion(0, 0, 1, 1) : MotionMath.ForLayer(group, frame);
+        var group = AnimationBindings.MotionGroup(project!, layer);
+        var parentMotion = group is null ? new LayerMotion(0, 0, 1, 1) : MotionMath.ForLayer(AnimationBindings.Resolve(project!, group), frame);
         var next = new LayerEditGesture(layer, handle, position, DisplayBounds(layer), RenderSize, EditingMotion(layer), parentMotion.ScaleX, parentMotion.ScaleY);
         if (CaptureMouse()) { editFrame = frame; gesture = next; Cursor = HandleCursor(handle); }
         e.Handled = true;

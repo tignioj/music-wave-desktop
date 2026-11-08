@@ -4,6 +4,7 @@ public static class LayerGroups
 {
     public static LayerGroup? Find(ProjectSettings project, WallpaperLayer layer) =>
         layer.GroupId.Length == 0 ? null : project.Groups.FirstOrDefault(g => g.Id == layer.GroupId);
+    public static bool IsVisible(ProjectSettings project, WallpaperLayer layer) => layer.Visible && Find(project, layer)?.Visible != false;
     public static WallpaperLayer[] Members(ProjectSettings project, LayerGroup group) => project.Layers.Where(l => l.GroupId == group.Id).ToArray();
     static WallpaperLayer[] Eligible(ProjectSettings project, IEnumerable<WallpaperLayer> selected) => selected.Distinct()
         .Where(l => project.Layers.Contains(l) && !(project.Layers.IndexOf(l) == 0 && l.IsStatic)).ToArray();
@@ -15,7 +16,7 @@ public static class LayerGroups
         var index = 1;
         while (project.Groups.Any(g => g.Name == $"图层组 {index}")) index++;
         var group = new LayerGroup { Name = $"图层组 {index}" };
-        group.CopyAnimationFrom((AnimationSettings?)Find(project, members[0]) ?? members[0]);
+        group.CopyAnimationFrom(AnimationBindings.Resolve(project, (AnimationTarget?)AnimationBindings.MotionGroup(project, members[0]) ?? members[0]));
         group.IsStatic = false;
         project.Groups.Add(group);
         Assign(project, group, members);

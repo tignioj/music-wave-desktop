@@ -284,6 +284,8 @@ public static class Diagnostics
         loaded.Layers.Add(new() { Path = imagePath }); render.Validate(loaded);
         PreviewEditingDiagnostics.Run(report, directory);
         GroupAnimationDiagnostics.Run(report, directory);
+        AnimationBindingDiagnostics.Run(report, directory);
+        EditorLayoutDiagnostics.Run(report, directory);
         report.AppendLine("PASS: silence gating, static invariance, squash/bounce transforms, project round trip, transparent PNG decoding, rendered preview frames.");
     }
     static void DesktopSmoke(App app, string output, StringBuilder report)

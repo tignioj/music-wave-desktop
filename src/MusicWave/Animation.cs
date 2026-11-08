@@ -28,9 +28,9 @@ public static class MotionMath
     }
     public static LayerMotion ForLayer(ProjectSettings project, WallpaperLayer layer, MotionFrame frame, double width, double height)
     {
-        var group = LayerGroups.Find(project, layer);
-        if (group is null) return ForLayer(layer, frame);
-        var motion = ForLayer(group, frame);
+        var group = AnimationBindings.MotionGroup(project, layer);
+        if (group is null) return ForLayer(AnimationBindings.Resolve(project, layer), frame);
+        var motion = ForLayer(AnimationBindings.Resolve(project, group), frame);
         // Transform every member about one shared, persisted bottom anchor.
         return new(motion.X + (layer.X - group.AnchorX) / 100 * DesignWidth * (motion.ScaleX - 1),
             motion.Y + (layer.Y - group.AnchorY) / 100 * height / width * DesignWidth * (motion.ScaleY - 1), motion.ScaleX, motion.ScaleY);

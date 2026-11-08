@@ -85,7 +85,7 @@ internal sealed class CompositionScene : IDisposable
     {
         bool changed = CommitCount == 0;
         // Reconcile by object identity; reorder without re-uploading textures.
-        var visible = project.Layers.Where(l => l.Visible).ToArray();
+        var visible = project.Layers.Where(l => LayerGroups.IsVisible(project, l)).ToArray();
         if (!layers.Select(l => l.Layer).SequenceEqual(visible))
         {
             var prior = layers.ToArray(); layers.Clear();

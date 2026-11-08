@@ -31,9 +31,12 @@ public partial class MainWindow : Window
     double lastUi;
     int displayChanged;
     nint hwnd;
+    readonly bool previewOnly;
     public ProjectSettings Settings => settings;
-    public MainWindow()
+    public MainWindow() : this(null, false) { }
+    internal MainWindow(ProjectSettings? project, bool previewOnly)
     {
+        this.previewOnly = previewOnly;
         timer = new(Dispatcher, Tick);
         InitializeComponent();
         Preview.SelectedLayerChanged += (_, _) =>
@@ -44,7 +47,7 @@ public partial class MainWindow : Window
                 LayerList.UnselectAll(); LayerList.SelectedItem = Preview.SelectedLayer;
             }
         };
-        try { settings = File.Exists(ProjectStore.DefaultPath) ? ProjectStore.Load(ProjectStore.DefaultPath) : ProjectSettings.Demo(); }
+        try { settings = project ?? (File.Exists(ProjectStore.DefaultPath) ? ProjectStore.Load(ProjectStore.DefaultPath) : ProjectSettings.Demo()); }
         catch (Exception ex) { settings = ProjectSettings.Demo(); Status("配置读取失败，已加载演示：" + ex.Message); }
         BindSettings();
         try { AudioDevices.ItemsSource = AudioCapture.Outputs(); }
@@ -62,10 +65,14 @@ public partial class MainWindow : Window
         settings.PropertyChanged += SettingsChanged;
         settings.Layers.CollectionChanged += LayersChanged;
         settings.Groups.CollectionChanged += GroupsChanged;
+        settings.Animations.CollectionChanged += AnimationsChanged;
+        RebindAnimations();
         RebindGroups(); LayerGroups.RefreshNames(settings);
         foreach (var layer in settings.Layers) layer.PropertyChanged += LayerPropertyChanged;
         LayerList.SelectedIndex = settings.Layers.Count > 1 ? 1 : 0;
         RefreshGroupUi();
+        AnimationPicker.SelectedIndex = settings.Animations.Count > 0 ? 0 : -1;
+        RefreshAnimationUi(true);
         dirty = true;
     }
     void UnbindSettings()
@@ -75,6 +82,9 @@ public partial class MainWindow : Window
         settings.Groups.CollectionChanged -= GroupsChanged;
         foreach (var group in watchedGroups) group.PropertyChanged -= GroupPropertyChanged;
         watchedGroups.Clear();
+        settings.Animations.CollectionChanged -= AnimationsChanged;
+        foreach (var animation in watchedAnimations) animation.PropertyChanged -= AnimationPropertyChanged;
+        watchedAnimations.Clear();
     }
     void SettingsChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -89,15 +99,18 @@ public partial class MainWindow : Window
         if (e.OldItems is not null) foreach (WallpaperLayer layer in e.OldItems) layer.PropertyChanged -= LayerPropertyChanged;
         if (e.NewItems is not null) foreach (WallpaperLayer layer in e.NewItems) layer.PropertyChanged += LayerPropertyChanged;
         LayerGroups.PruneEmpty(settings); RefreshGroupUi();
+        RefreshAnimationUi(true);
         dirty = true;
     }
     void LayerPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         dirty = true;
-        if (e.PropertyName is nameof(WallpaperLayer.GroupId) or nameof(WallpaperLayer.Name)) RefreshGroupUi();
+        if (e.PropertyName is nameof(WallpaperLayer.GroupId) or nameof(WallpaperLayer.Name) or nameof(WallpaperLayer.AnimationId))
+        { RefreshGroupUi(); RefreshAnimationUi(); }
     }
     void OnLoaded(object sender, RoutedEventArgs e)
     {
+        if (previewOnly) { Preview.Update(settings, new(.25, 1, settings.Bpm, 0, 1)); return; }
         hwnd = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(hwnd).AddHook(WindowHook);
         var pauseRegistered = Native.RegisterHotKey(hwnd, 1, 0x4000 | 1 | 2, 0x50);
@@ -316,6 +329,7 @@ public partial class MainWindow : Window
     void OnClosing(object? sender, CancelEventArgs e)
     {
         if (closing) return; closing = true;
+        if (previewOnly) { timer.Dispose(); saveTimer.Stop(); audio.Dispose(); UnbindSettings(); return; }
         timer.Dispose(); saveTimer.Stop(); StopDesktop(); audio.Dispose(); tray?.Dispose();
         Native.UnregisterHotKey(hwnd, 1); Native.UnregisterHotKey(hwnd, 2);
         try { ProjectStore.Save(settings, ProjectStore.DefaultPath); } catch (Exception ex) { App.Log("退出时保存配置", ex); }
