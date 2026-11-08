@@ -31,6 +31,7 @@ internal sealed class CompositionScene : IDisposable
     readonly List<LayerVisual> layers = [];
     public int UploadCount { get; private set; }
     public long CommitCount { get; private set; }
+    internal Matrix3x2? TransformFor(WallpaperLayer layer) => layers.FirstOrDefault(l => ReferenceEquals(l.Layer, layer))?.Matrix;
 
     sealed class LayerVisual(WallpaperLayer layer, IDCompositionVisual2 visual, IDCompositionEffectGroup opacity) : IDisposable
     {
@@ -40,7 +41,7 @@ internal sealed class CompositionScene : IDisposable
         public IDCompositionSurface? Surface;
         public string Path = "";
         public double Width, Height;
-        public bool Cover;
+        public bool Cover, Stretch;
         public Rect Bounds;
         public int PixelWidth, PixelHeight;
         public Matrix3x2? Matrix;
@@ -110,18 +111,27 @@ internal sealed class CompositionScene : IDisposable
         {
             var layer = item.Layer;
             var cover = project.Layers.IndexOf(layer) == 0 && layer.IsStatic;
-            if (item.Surface is null || item.Path != layer.Path || item.Width != layer.Width || item.Height != layer.Height || item.Cover != cover)
+            var layoutChanged = item.Width != layer.Width || item.Height != layer.Height || item.Cover != cover || item.Stretch != layer.StretchToBounds;
+            if (item.Surface is null || item.Path != layer.Path || layer.Path.StartsWith("demo:") && layoutChanged)
             {
                 var bitmap = LayerPixels(layer, cover, out var bounds);
                 var surface = Upload(bitmap);
                 try { item.Visual.SetContent(surface).CheckError(); }
                 catch { surface.Dispose(); throw; }
                 item.Surface?.Dispose(); item.Surface = surface;
-                item.Path = layer.Path; item.Width = layer.Width; item.Height = layer.Height; item.Cover = cover;
+                item.Path = layer.Path; item.Width = layer.Width; item.Height = layer.Height; item.Cover = cover; item.Stretch = layer.StretchToBounds;
                 item.Bounds = bounds; item.PixelWidth = bitmap.PixelWidth; item.PixelHeight = bitmap.PixelHeight;
                 item.Matrix = null; changed = true;
             }
-            var motion = MotionMath.ForLayer(layer, frame);
+            else if (layoutChanged)
+            {
+                // Image pixels are independent of their display size; a drag only changes the GPU transform.
+                var w = width * layer.Width / 100; var h = height * layer.Height / 100;
+                var scale = cover ? Math.Max(w / item.PixelWidth, h / item.PixelHeight) : Math.Min(w / item.PixelWidth, h / item.PixelHeight);
+                item.Bounds = layer.StretchToBounds ? new(-w / 2, -h, w, h) : new(-item.PixelWidth * scale / 2, -item.PixelHeight * scale, item.PixelWidth * scale, item.PixelHeight * scale);
+                item.Width = layer.Width; item.Height = layer.Height; item.Cover = cover; item.Stretch = layer.StretchToBounds;
+            }
+            var motion = MotionMath.ForLayer(project, layer, frame, width, height);
             var sx = (float)(motion.ScaleX * item.Bounds.Width / item.PixelWidth);
             var sy = (float)(motion.ScaleY * item.Bounds.Height / item.PixelHeight);
             var matrix = new Matrix3x2(sx, 0, 0, sy,
@@ -141,11 +151,11 @@ internal sealed class CompositionScene : IDisposable
         {
             var image = SceneRenderer.LoadImage(layer.Path);
             var scale = cover ? Math.Max(w / image.PixelWidth, h / image.PixelHeight) : Math.Min(w / image.PixelWidth, h / image.PixelHeight);
-            bounds = new(-image.PixelWidth * scale / 2, -image.PixelHeight * scale, image.PixelWidth * scale, image.PixelHeight * scale);
+            bounds = layer.StretchToBounds ? new(-w / 2, -h, w, h) : new(-image.PixelWidth * scale / 2, -image.PixelHeight * scale, image.PixelWidth * scale, image.PixelHeight * scale);
             return image.Format == PixelFormats.Pbgra32 ? image : new FormatConvertedBitmap(image, PixelFormats.Pbgra32, null, 0);
         }
         var content = new DrawingVisual();
-        using (var dc = content.RenderOpen()) SceneRenderer.DrawDemo(dc, layer.Path, w, h);
+        using (var dc = content.RenderOpen()) SceneRenderer.DrawDemo(dc, layer.Path, w, h, layer.StretchToBounds);
         bounds = content.ContentBounds;
         var ratio = Math.Min(1, 4096 / Math.Max(bounds.Width, bounds.Height));
         var pixels = new RenderTargetBitmap(Math.Max(1, (int)Math.Ceiling(bounds.Width * ratio)), Math.Max(1, (int)Math.Ceiling(bounds.Height * ratio)), 96, 96, PixelFormats.Pbgra32);

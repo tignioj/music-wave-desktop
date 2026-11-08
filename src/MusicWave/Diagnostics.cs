@@ -282,6 +282,8 @@ public static class Diagnostics
         var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(tiny));
         var imagePath = Path.Combine(directory, "transparent-test.png"); using (var stream = File.Create(imagePath)) png.Save(stream);
         loaded.Layers.Add(new() { Path = imagePath }); render.Validate(loaded);
+        PreviewEditingDiagnostics.Run(report, directory);
+        GroupAnimationDiagnostics.Run(report, directory);
         report.AppendLine("PASS: silence gating, static invariance, squash/bounce transforms, project round trip, transparent PNG decoding, rendered preview frames.");
     }
     static void DesktopSmoke(App app, string output, StringBuilder report)

@@ -36,6 +36,14 @@ public partial class MainWindow : Window
     {
         timer = new(Dispatcher, Tick);
         InitializeComponent();
+        Preview.SelectedLayerChanged += (_, _) =>
+        {
+            if (Preview.SelectedLayer is null) LayerList.UnselectAll();
+            else if (!LayerList.SelectedItems.Contains(Preview.SelectedLayer))
+            {
+                LayerList.UnselectAll(); LayerList.SelectedItem = Preview.SelectedLayer;
+            }
+        };
         try { settings = File.Exists(ProjectStore.DefaultPath) ? ProjectStore.Load(ProjectStore.DefaultPath) : ProjectSettings.Demo(); }
         catch (Exception ex) { settings = ProjectSettings.Demo(); Status("配置读取失败，已加载演示：" + ex.Message); }
         BindSettings();
@@ -53,14 +61,20 @@ public partial class MainWindow : Window
         DataContext = settings;
         settings.PropertyChanged += SettingsChanged;
         settings.Layers.CollectionChanged += LayersChanged;
+        settings.Groups.CollectionChanged += GroupsChanged;
+        RebindGroups(); LayerGroups.RefreshNames(settings);
         foreach (var layer in settings.Layers) layer.PropertyChanged += LayerPropertyChanged;
         LayerList.SelectedIndex = settings.Layers.Count > 1 ? 1 : 0;
+        RefreshGroupUi();
         dirty = true;
     }
     void UnbindSettings()
     {
         settings.PropertyChanged -= SettingsChanged; settings.Layers.CollectionChanged -= LayersChanged;
         foreach (var layer in settings.Layers) layer.PropertyChanged -= LayerPropertyChanged;
+        settings.Groups.CollectionChanged -= GroupsChanged;
+        foreach (var group in watchedGroups) group.PropertyChanged -= GroupPropertyChanged;
+        watchedGroups.Clear();
     }
     void SettingsChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -74,9 +88,14 @@ public partial class MainWindow : Window
     {
         if (e.OldItems is not null) foreach (WallpaperLayer layer in e.OldItems) layer.PropertyChanged -= LayerPropertyChanged;
         if (e.NewItems is not null) foreach (WallpaperLayer layer in e.NewItems) layer.PropertyChanged += LayerPropertyChanged;
+        LayerGroups.PruneEmpty(settings); RefreshGroupUi();
         dirty = true;
     }
-    void LayerPropertyChanged(object? sender, PropertyChangedEventArgs e) => dirty = true;
+    void LayerPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        dirty = true;
+        if (e.PropertyName is nameof(WallpaperLayer.GroupId) or nameof(WallpaperLayer.Name)) RefreshGroupUi();
+    }
     void OnLoaded(object sender, RoutedEventArgs e)
     {
         hwnd = new WindowInteropHelper(this).Handle;
@@ -190,7 +209,14 @@ public partial class MainWindow : Window
         if (taps.Count >= 2) { settings.Automatic = false; settings.Bpm = 60 * (taps.Count - 1) / (taps.Last() - taps.First()); rhythm.Reset(); Status($"点按定速：{settings.Bpm:F0} BPM"); }
         else Status("继续跟着节奏点按…");
     }
-    void Layer_Changed(object sender, SelectionChangedEventArgs e) { if (LayerEditor is not null) { LayerEditor.DataContext = LayerList.SelectedItem; LayerEditor.IsEnabled = LayerList.SelectedItem is not null; } }
+    void Layer_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        var layer = e.AddedItems.OfType<WallpaperLayer>().LastOrDefault() ?? LayerList.SelectedItem as WallpaperLayer;
+        if (LayerEditor is not null) { LayerEditor.DataContext = layer; LayerEditor.IsEnabled = layer is not null; }
+        if (Preview is not null) Preview.SelectedLayer = layer;
+        if (settings is not null && GroupPicker is not null && GroupPicker.SelectedItem is null && layer is not null && LayerGroups.Find(settings, layer) is { } group) GroupPicker.SelectedItem = group;
+        RefreshGroupUi();
+    }
     void AudioDevice_Changed(object sender, SelectionChangedEventArgs e) { }
     void Monitor_Changed(object sender, SelectionChangedEventArgs e) { }
     static string? PickImage(Window owner)
@@ -203,6 +229,46 @@ public partial class MainWindow : Window
         var path = PickImage(this); if (path is null) return;
         try { SceneRenderer.LoadImage(path); var layer = new WallpaperLayer { Name = Path.GetFileNameWithoutExtension(path), Path = path }; settings.Layers.Add(layer); LayerList.SelectedItem = layer; }
         catch (Exception ex) { Error("图片无法读取", ex); }
+    }
+    static readonly HashSet<string> imageExtensions = new(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff" };
+    internal static string[] DroppedImages(IDataObject data) => data.GetDataPresent(DataFormats.FileDrop) && data.GetData(DataFormats.FileDrop) is string[] paths
+        ? paths.Where(p => imageExtensions.Contains(Path.GetExtension(p)) && File.Exists(p)).ToArray() : [];
+    void Images_DragOver(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+        e.Effects = DroppedImages(e.Data).Length > 0 ? DragDropEffects.Copy & e.AllowedEffects : DragDropEffects.None;
+        e.Handled = true;
+    }
+    void Images_Drop(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+        e.Handled = true;
+        if (!e.AllowedEffects.HasFlag(DragDropEffects.Copy)) { e.Effects = DragDropEffects.None; return; }
+        var paths = DroppedImages(e.Data);
+        if (paths.Length == 0) { Status("请拖入 PNG、JPEG、BMP 或 TIFF 图片文件。"); return; }
+        var position = e.GetPosition(Preview);
+        var inPreview = new Rect(Preview.RenderSize).Contains(position) && Preview.ActualWidth > 0 && Preview.ActualHeight > 0;
+        var x = inPreview ? position.X / Preview.ActualWidth * 100 : 50;
+        var y = inPreview ? position.Y / Preview.ActualHeight * 100 : 82;
+        var (added, lastLayer, errors) = ImportImages(settings, paths, x, y);
+        if (lastLayer is not null) LayerList.SelectedItem = lastLayer;
+        e.Effects = added > 0 ? DragDropEffects.Copy : DragDropEffects.None;
+        Status($"已拖入 {added} 个动态图层。" + (errors.Count > 0 ? $" {errors.Count} 张图片读取失败：{string.Join("；", errors)}" : "可在预览中拖动位置或拉伸尺寸。"));
+    }
+    internal static (int Count, WallpaperLayer? LastLayer, List<string> Errors) ImportImages(ProjectSettings target, IEnumerable<string> paths, double x, double y)
+    {
+        var added = 0; WallpaperLayer? lastLayer = null; var errors = new List<string>();
+        foreach (var path in paths)
+        {
+            try
+            {
+                SceneRenderer.LoadImage(path);
+                var layer = new WallpaperLayer { Name = Path.GetFileNameWithoutExtension(path), Path = path, X = x + added * 2, Y = y + added * 2 };
+                target.Layers.Add(layer); lastLayer = layer; added++;
+            }
+            catch (Exception ex) { errors.Add($"{Path.GetFileName(path)}：{ex.Message}"); }
+        }
+        return (added, lastLayer, errors);
     }
     void Background_Click(object sender, RoutedEventArgs e)
     {
@@ -218,14 +284,14 @@ public partial class MainWindow : Window
     }
     void Replace_Click(object sender, RoutedEventArgs e)
     {
-        if (LayerList.SelectedItem is not WallpaperLayer layer) return;
+        if (LayerEditor.DataContext is not WallpaperLayer layer) return;
         var path = PickImage(this); if (path is null) return;
         try { SceneRenderer.LoadImage(path); layer.Path = path; Preview.ClearCache(); wallpaper?.InvalidateImages(); }
         catch (Exception ex) { Error("图片无法读取", ex); }
     }
     void Up_Click(object sender, RoutedEventArgs e) { var i = LayerList.SelectedIndex; if (i > 0) settings.Layers.Move(i, i - 1); }
     void Down_Click(object sender, RoutedEventArgs e) { var i = LayerList.SelectedIndex; if (i >= 0 && i + 1 < settings.Layers.Count) settings.Layers.Move(i, i + 1); }
-    void Remove_Click(object sender, RoutedEventArgs e) { if (LayerList.SelectedItem is WallpaperLayer layer) settings.Layers.Remove(layer); }
+    void Remove_Click(object sender, RoutedEventArgs e) { foreach (var layer in SelectedLayers()) settings.Layers.Remove(layer); }
     void SaveProject_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new SaveFileDialog { Title = "导出项目（图片路径保存在项目中）", Filter = "MusicWave 项目|*.musicwave.json", FileName = "我的律动桌面.musicwave.json" };

@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace MusicWave;
 
@@ -13,26 +14,50 @@ public abstract class Observable : INotifyPropertyChanged
     { if (!EqualityComparer<T>.Default.Equals(field, value)) { field = value; PropertyChanged?.Invoke(this, new(name)); } }
 }
 
-public sealed class WallpaperLayer : Observable
+public abstract class AnimationSettings : Observable
 {
-    string name = "新图层", path = "";
-    bool isStatic, visible = true;
-    double x = 50, y = 82, width = 40, height = 60, opacity = 1, bounce = 28, squash = .34, sway, phase, speed = 1;
+    bool isStatic;
+    double bounce = 28, squash = .34, sway, phase, speed = 1;
+    public bool IsStatic { get => isStatic; set => Set(ref isStatic, value); }
+    public double Bounce { get => bounce; set => Set(ref bounce, Math.Clamp(value, 0, 300)); }
+    public double Squash { get => squash; set => Set(ref squash, Math.Clamp(value, 0, .85)); }
+    public double Sway { get => sway; set => Set(ref sway, Math.Clamp(value, 0, 200)); }
+    public double Phase { get => phase; set => Set(ref phase, Math.Clamp(value, 0, 360)); }
+    public double Speed { get => speed; set => Set(ref speed, Math.Clamp(value, .25, 4)); }
+    public void CopyAnimationFrom(AnimationSettings source)
+    {
+        IsStatic = source.IsStatic; Bounce = source.Bounce; Squash = source.Squash;
+        Sway = source.Sway; Phase = source.Phase; Speed = source.Speed;
+    }
+}
+
+public sealed class WallpaperLayer : AnimationSettings
+{
+    string name = "新图层", path = "", groupId = "", groupName = "独立图层";
+    bool visible = true, stretchToBounds;
+    double x = 50, y = 82, width = 40, height = 60, opacity = 1;
     public string Name { get => name; set => Set(ref name, value); }
     public string Path { get => path; set => Set(ref path, value); }
-    public bool IsStatic { get => isStatic; set => Set(ref isStatic, value); }
+    public string GroupId { get => groupId; set => Set(ref groupId, value ?? ""); }
+    [JsonIgnore] public string GroupName { get => groupName; internal set => Set(ref groupName, value); }
     public bool Visible { get => visible; set => Set(ref visible, value); }
+    public bool StretchToBounds { get => stretchToBounds; set => Set(ref stretchToBounds, value); }
     // X = horizontal center; Y = bottom anchor; all layout values are percentages of the screen.
     public double X { get => x; set => Set(ref x, Math.Clamp(value, -100, 200)); }
     public double Y { get => y; set => Set(ref y, Math.Clamp(value, -100, 200)); }
     public double Width { get => width; set => Set(ref width, Math.Clamp(value, 1, 300)); }
     public double Height { get => height; set => Set(ref height, Math.Clamp(value, 1, 300)); }
     public double Opacity { get => opacity; set => Set(ref opacity, Math.Clamp(value, 0, 1)); }
-    public double Bounce { get => bounce; set => Set(ref bounce, Math.Clamp(value, 0, 300)); }
-    public double Squash { get => squash; set => Set(ref squash, Math.Clamp(value, 0, .85)); }
-    public double Sway { get => sway; set => Set(ref sway, Math.Clamp(value, 0, 200)); }
-    public double Phase { get => phase; set => Set(ref phase, Math.Clamp(value, 0, 360)); }
-    public double Speed { get => speed; set => Set(ref speed, Math.Clamp(value, .25, 4)); }
+}
+
+public sealed class LayerGroup : AnimationSettings
+{
+    string id = Guid.NewGuid().ToString("N"), name = "新建组";
+    double anchorX = 50, anchorY = 82;
+    public string Id { get => id; set => Set(ref id, value); }
+    public string Name { get => name; set => Set(ref name, value); }
+    public double AnchorX { get => anchorX; set => Set(ref anchorX, Math.Clamp(value, -100, 200)); }
+    public double AnchorY { get => anchorY; set => Set(ref anchorY, Math.Clamp(value, -100, 200)); }
 }
 
 public sealed class ProjectSettings : Observable
@@ -53,6 +78,7 @@ public sealed class ProjectSettings : Observable
     public int MonitorIndex { get => monitorIndex; set => Set(ref monitorIndex, Math.Max(0, value)); }
     public string AudioDeviceId { get => audioDeviceId; set => Set(ref audioDeviceId, value); }
     public ObservableCollection<WallpaperLayer> Layers { get; set; } = [];
+    public ObservableCollection<LayerGroup> Groups { get; set; } = [];
     public static ProjectSettings Demo() => new()
     {
         Layers = [
@@ -73,12 +99,17 @@ public static class ProjectStore
     {
         var settings = JsonSerializer.Deserialize<ProjectSettings>(File.ReadAllText(path), Json) ?? throw new InvalidDataException("项目为空");
         if (settings.Layers is null || settings.Layers.Any(l => l is null)) throw new InvalidDataException("项目图层无效");
+        if (settings.Groups is null || settings.Groups.Any(g => g is null || string.IsNullOrWhiteSpace(g.Id)) || settings.Groups.Select(g => g.Id).Distinct().Count() != settings.Groups.Count)
+            throw new InvalidDataException("项目分组无效或分组标识重复");
         foreach (var layer in settings.Layers)
         {
             if (string.IsNullOrWhiteSpace(layer.Path)) throw new InvalidDataException("图层缺少图片路径");
             if (!layer.Path.StartsWith("demo:") && !System.IO.Path.IsPathRooted(layer.Path))
                 layer.Path = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(path)!, layer.Path));
         }
+        foreach (var layer in settings.Layers)
+            if (layer.GroupId.Length > 0 && LayerGroups.Find(settings, layer) is null) layer.GroupId = "";
+        LayerGroups.RefreshNames(settings);
         return settings;
     }
     public static void Save(ProjectSettings settings, string path)

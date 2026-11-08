@@ -8,7 +8,7 @@
     <PlatformTarget>x64</PlatformTarget>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>MusicWave</AssemblyName>
-    <Version>1.0.4</Version>
+    <Version>1.0.6</Version>
     <Description>随音乐呼吸的 Windows 桌面</Description>
   </PropertyGroup>
   <ItemGroup>

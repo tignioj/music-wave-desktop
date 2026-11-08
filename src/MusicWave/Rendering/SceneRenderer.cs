@@ -7,10 +7,10 @@ using MusicWave.Desktop;
 
 namespace MusicWave.Rendering;
 
-public sealed class SceneRenderer : FrameworkElement
+public sealed partial class SceneRenderer : FrameworkElement
 {
     readonly Dictionary<string, BitmapSource> images = new(StringComparer.OrdinalIgnoreCase);
-    readonly Dictionary<(string Path, double Width, double Height), DrawingGroup> demos = [];
+    readonly Dictionary<(string Path, double Width, double Height, bool Stretch), DrawingGroup> demos = [];
     static readonly SolidColorBrush background = Brush("#101D31");
     readonly HashSet<string> failed = [];
     ProjectSettings? project;
@@ -18,8 +18,13 @@ public sealed class SceneRenderer : FrameworkElement
     public bool ShowPreviewIcons { get; set; }
     public IconPreviewLayout? PreviewIcons { get; set; }
     public string? ImageError { get; private set; }
-    public void Update(ProjectSettings settings, MotionFrame value) { project = settings; frame = value; InvalidateVisual(); }
-    public void ClearCache() { images.Clear(); demos.Clear(); failed.Clear(); ImageError = null; }
+    public void Update(ProjectSettings settings, MotionFrame value)
+    {
+        project = settings; frame = value;
+        if (gesture is not null && !CanEdit(gesture.Layer)) EndEdit();
+        InvalidateVisual();
+    }
+    public void ClearCache() { images.Clear(); hitImages.Clear(); demos.Clear(); failed.Clear(); ImageError = null; }
     public static BitmapSource LoadImage(string path)
     {
         var uri = new Uri(Path.GetFullPath(path));
@@ -47,7 +52,7 @@ public sealed class SceneRenderer : FrameworkElement
             {
                 var layer = project.Layers[i];
                 if (!layer.Visible) continue;
-                var motion = MotionMath.ForLayer(layer, frame);
+                var motion = EditingMotion(layer);
                 var cx = w * layer.X / 100 + motion.X * w / 1920;
                 var cy = h * layer.Y / 100 + motion.Y * w / 1920;
                 var lw = w * layer.Width / 100; var lh = h * layer.Height / 100;
@@ -56,37 +61,60 @@ public sealed class SceneRenderer : FrameworkElement
                 dc.PushTransform(new ScaleTransform(motion.ScaleX, motion.ScaleY));
                 if (layer.Path.StartsWith("demo:"))
                 {
-                    var key = (layer.Path, lw, lh);
-                    if (!demos.TryGetValue(key, out var drawing))
-                    {
-                        drawing = new DrawingGroup();
-                        using (var content = drawing.Open()) DrawDemo(content, layer.Path, lw, lh);
-                        drawing.Freeze();
-                        if (demos.Count >= 64) demos.Clear();
-                        demos[key] = drawing;
-                    }
-                    dc.DrawDrawing(drawing);
+                    dc.DrawDrawing(DemoDrawing(layer, lw, lh));
                 }
                 else if (!failed.Contains(layer.Path))
                 {
                     try
                     {
                         if (!images.TryGetValue(layer.Path, out var bitmap)) images[layer.Path] = bitmap = LoadImage(layer.Path);
-                        var scale = i == 0 && layer.IsStatic ? Math.Max(lw / bitmap.PixelWidth, lh / bitmap.PixelHeight) : Math.Min(lw / bitmap.PixelWidth, lh / bitmap.PixelHeight);
-                        var iw = bitmap.PixelWidth * scale; var ih = bitmap.PixelHeight * scale;
-                        dc.DrawImage(bitmap, new(-iw / 2, -ih, iw, ih));
+                        dc.DrawImage(bitmap, ImageBounds(layer, bitmap, lw, lh));
                     }
                     catch (Exception ex) { failed.Add(layer.Path); ImageError = $"无法加载 {layer.Name}：{ex.Message}"; }
                 }
                 dc.Pop(); dc.Pop(); dc.Pop();
             }
             if (ShowPreviewIcons) DrawIcons(dc, w, h);
+            DrawSelection(dc);
         }
         dc.Pop();
     }
-    static SolidColorBrush Brush(string hex) { var b = new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex)); b.Freeze(); return b; }
-    internal static void DrawDemo(DrawingContext dc, string kind, double w, double h)
+    DrawingGroup DemoDrawing(WallpaperLayer layer, double w, double h)
     {
+        var key = (layer.Path, w, h, layer.StretchToBounds);
+        if (!demos.TryGetValue(key, out var drawing))
+        {
+            drawing = new DrawingGroup();
+            using (var content = drawing.Open()) DrawDemo(content, layer.Path, w, h, layer.StretchToBounds);
+            drawing.Freeze();
+            if (demos.Count >= 64) demos.Clear();
+            demos[key] = drawing;
+        }
+        return drawing;
+    }
+    Rect ImageBounds(WallpaperLayer layer, BitmapSource bitmap, double w, double h)
+    {
+        if (layer.StretchToBounds) return new(-w / 2, -h, w, h);
+        var cover = project?.Layers.IndexOf(layer) == 0 && layer.IsStatic;
+        var scale = cover ? Math.Max(w / bitmap.PixelWidth, h / bitmap.PixelHeight) : Math.Min(w / bitmap.PixelWidth, h / bitmap.PixelHeight);
+        var iw = bitmap.PixelWidth * scale; var ih = bitmap.PixelHeight * scale;
+        return new(-iw / 2, -ih, iw, ih);
+    }
+    static SolidColorBrush Brush(string hex) { var b = new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex)); b.Freeze(); return b; }
+    internal static void DrawDemo(DrawingContext dc, string kind, double w, double h, bool stretchToBounds = false)
+    {
+        if (stretchToBounds && kind != "demo:sky")
+        {
+            var drawing = new DrawingGroup();
+            using (var content = drawing.Open()) DrawDemo(content, kind, w, h);
+            var bounds = drawing.Bounds;
+            dc.PushTransform(new TranslateTransform(-w / 2, -h));
+            dc.PushTransform(new ScaleTransform(w / bounds.Width, h / bounds.Height));
+            dc.PushTransform(new TranslateTransform(-bounds.X, -bounds.Y));
+            dc.DrawDrawing(drawing);
+            dc.Pop(); dc.Pop(); dc.Pop();
+            return;
+        }
         if (kind == "demo:sky")
         {
             dc.PushTransform(new TranslateTransform(-w / 2, -h));

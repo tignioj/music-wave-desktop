@@ -18,13 +18,22 @@ public static class MotionMath
         var phase = frame.Beats + (x / scale / 500 + y / scale / 1000) * spread;
         return (int)Math.Round(Pulse(phase) * amplitude * frame.Strength * scale);
     }
-    public static LayerMotion ForLayer(WallpaperLayer layer, MotionFrame frame)
+    public static LayerMotion ForLayer(AnimationSettings layer, MotionFrame frame)
     {
         if (layer.IsStatic) return new(0, 0, 1, 1);
         var phase = frame.Beats * layer.Speed + layer.Phase / 360;
         var pulse = Pulse(phase) * frame.Strength;
         return new(Math.Sin(phase * Math.PI * 2) * layer.Sway * frame.Strength,
             -layer.Bounce * pulse, 1 + layer.Squash * pulse * .24, Math.Max(.12, 1 - layer.Squash * pulse));
+    }
+    public static LayerMotion ForLayer(ProjectSettings project, WallpaperLayer layer, MotionFrame frame, double width, double height)
+    {
+        var group = LayerGroups.Find(project, layer);
+        if (group is null) return ForLayer(layer, frame);
+        var motion = ForLayer(group, frame);
+        // Transform every member about one shared, persisted bottom anchor.
+        return new(motion.X + (layer.X - group.AnchorX) / 100 * DesignWidth * (motion.ScaleX - 1),
+            motion.Y + (layer.Y - group.AnchorY) / 100 * height / width * DesignWidth * (motion.ScaleY - 1), motion.ScaleX, motion.ScaleY);
     }
 }
 
